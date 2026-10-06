@@ -1,0 +1,400 @@
+name: Android Build (reusable)
+
+# Workflow riusabile per app Android NATIVE (Gradle, Kotlin/Compose) con un'eventuale libreria
+# nativa Rust compilata da Gradle con cargo-ndk. Fratello di `expo-build.yml` e `gpui-build.yml`:
+# stessi input comuni (runner, max_workers, clear_cache), stesso build-kit per worker e cache,
+# stessa firma col keystore del runner, stessa notifica. Chiamato da thin wrapper via:
+#   uses: GabryXnLab/android-ci/.github/workflows/android-build.yml@main
+#
+# Il progetto decide cosa compila Gradle (`gradle_task`): se un suo task lancia cargo-ndk, qui ci
+# sono toolchain Rust e cargo-ndk già pronti (input `rust`).
+
+on:
+  workflow_call:
+    inputs:
+      app_name:
+        description: 'Nome app (titolo delle notifiche Telegram)'
+        required: true
+        type: string
+      runner:
+        description: 'self-hosted (nexus-core, ARM64) | github (runner GitHub-hosted)'
+        required: false
+        default: 'self-hosted'
+        type: string
+      max_workers:
+        description: >-
+          Worker di Gradle/cargo (e di CMake) per questo run. auto = sul self-hosted le CPU libere
+          in quel momento, mai sotto 2; su GitHub tutte | 2 | 4. Stesso input, stessi valori e
+          stesso significato in flutter-ci, expo-ci, desktop-ci e android-ci (GabryXnLab/build-kit).
+        required: false
+        default: 'auto'
+        type: string
+      clear_cache:
+        description: >-
+          Sul self-hosted cancella la cartella target di cargo del repo e, per questo run, Gradle,
+          ccache e sccache ricompilano invece di fidarsi delle cache condivise (che non si
+          cancellano mai). Su GitHub il run non riprende né salva le cache.
+        required: false
+        default: false
+        type: boolean
+      project_dir:
+        description: 'Cartella del progetto Gradle (con gradlew), relativa alla radice del repo'
+        required: false
+        default: '.'
+        type: string
+      gradle_task:
+        description: 'Task Gradle da lanciare (spazio-separati). Con debug=true si usa :app:assembleDebug.'
+        required: false
+        default: ':app:assembleRelease'
+        type: string
+      abis:
+        description: 'ABI delle librerie native, CSV, passate a Gradle come -Priftgate.abis (es. arm64-v8a,x86_64)'
+        required: false
+        default: 'arm64-v8a,x86_64'
+        type: string
+      abis_property:
+        description: 'Nome della proprietà Gradle che riceve le ABI'
+        required: false
+        default: 'riftgate.abis'
+        type: string
+      debug:
+        description: 'true → :app:assembleDebug invece di gradle_task'
+        required: false
+        default: false
+        type: boolean
+      signing_keystore:
+        description: >-
+          Nome del keystore con cui FIRMARE l'APK (senza estensione): il runner lo cerca in
+          /home/ubuntu/secrets/<nome>.jks + <nome>.properties (storePassword, keyAlias,
+          keyPassword), oppure nei secret ANDROID_KEYSTORE_BASE64 + ANDROID_KEYSTORE_PROPERTIES.
+          Vuoto = la firma che il progetto configura da sé (di norma quella di debug). Dichiarato
+          e introvabile = job fallito; dopo la build l'impronta dell'APK è confrontata con quella
+          del keystore.
+        required: false
+        default: ''
+        type: string
+      rust:
+        description: 'true → toolchain Rust stable, cargo-ndk (in ~/ci/tools) e sccache condiviso, per un progetto che compila Rust con cargo-ndk da Gradle'
+        required: false
+        default: true
+        type: boolean
+      cargo_ndk_version:
+        description: 'Versione di cargo-ndk (installata in ~/ci/tools/cargo-ndk/<versione>)'
+        required: false
+        default: '4.1.2'
+        type: string
+      cargo_target_in_checkout:
+        description: 'true → Gradle lancia cargo senza CARGO_TARGET_DIR: la cartella target resta nel checkout (per script che cercano target/ accanto al crate)'
+        required: false
+        default: false
+        type: boolean
+      ndk_version:
+        description: 'Versione dell NDK (self-hosted: quella già in /opt/android-sdk; GitHub: installata con sdkmanager se manca)'
+        required: false
+        default: '27.3.13750724'
+        type: string
+      github_runner_label:
+        description: 'runs-on con runner=github (ubuntu-24.04 x86-64, o ubuntu-24.04-arm se l NDK scelto ha una toolchain per quell host)'
+        required: false
+        default: 'ubuntu-24.04'
+        type: string
+      selfhosted_runner:
+        description: 'runs-on con runner=self-hosted (JSON array)'
+        required: false
+        default: '["self-hosted","nexus-core"]'
+        type: string
+      ref:
+        description: 'Branch/tag/SHA da buildare. Vuoto = quello del run.'
+        required: false
+        default: ''
+        type: string
+      artifact_name:
+        description: 'Nome dell artifact del run. Vuoto = app_name.'
+        required: false
+        default: ''
+        type: string
+      telegram_topic_id:
+        description: 'Topic del supergruppo Telegram per la notifica (message_thread_id). Vuoto = nessuna notifica.'
+        required: false
+        default: ''
+        type: string
+    secrets:
+      TELEGRAM_BOT_TOKEN:
+        required: false
+      TELEGRAM_CHAT_ID:
+        required: false
+      ANDROID_KEYSTORE_BASE64:
+        required: false
+      ANDROID_KEYSTORE_PROPERTIES:
+        required: false
+
+jobs:
+  build:
+    name: Android ${{ inputs.debug && 'debug' || 'build' }} (${{ inputs.abis }})
+    runs-on: ${{ inputs.runner == 'github' && fromJSON(format('["{0}"]', inputs.github_runner_label)) || fromJSON(inputs.selfhosted_runner) }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Validate inputs
+        env:
+          RUNNER_KIND: ${{ inputs.runner }}
+        run: |
+          if [ "$RUNNER_KIND" != "self-hosted" ] && [ "$RUNNER_KIND" != "github" ]; then
+            echo "::error::runner non valido: '$RUNNER_KIND' (attesi: self-hosted | github)"; exit 1
+          fi
+
+      - name: Notify start via Telegram
+        id: started
+        uses: GabryXnLab/build-kit/notify@main
+        with:
+          run_inputs: ${{ toJSON(github.event.inputs) }}
+          bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat_id: ${{ secrets.TELEGRAM_CHAT_ID }}
+          topic_id: ${{ inputs.telegram_topic_id }}
+          status: started
+          title: ${{ inputs.app_name }} ${{ inputs.debug && 'debug' || 'release' }} (Android)
+
+      # Il checkout pulisce solo su GitHub (macchina nuova) o con clear_cache: sul self-hosted gli
+      # intermedi di Gradle e di cargo restano fra i run.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          clean: ${{ inputs.runner == 'github' || inputs.clear_cache == true }}
+
+      - name: Tune build
+        id: tune
+        uses: GabryXnLab/build-kit/setup@main
+        with:
+          runner: ${{ inputs.runner }}
+          max_workers: ${{ inputs.max_workers }}
+          clear_cache: ${{ inputs.clear_cache }}
+          rust: ${{ inputs.rust && 'true' || 'false' }}
+
+      # ── Ambiente Android ───────────────────────────────────────────────────────────────
+      # Self-hosted: JDK, SDK e NDK condivisi della macchina, che si usano e non si modificano.
+      - name: Android environment (self-hosted)
+        if: ${{ inputs.runner != 'github' }}
+        env:
+          NDK_VERSION: ${{ inputs.ndk_version }}
+        run: |
+          set -euo pipefail
+          {
+            echo "ANDROID_HOME=/opt/android-sdk"
+            echo "ANDROID_SDK_ROOT=/opt/android-sdk"
+            echo "ANDROID_NDK_HOME=/opt/android-sdk/ndk/$NDK_VERSION"
+            echo "ANDROID_NDK_ROOT=/opt/android-sdk/ndk/$NDK_VERSION"
+            echo "JAVA_HOME=/usr/lib/jvm/java-17-openjdk-$(dpkg --print-architecture)"
+          } >> "$GITHUB_ENV"
+          test -d "/opt/android-sdk/ndk/$NDK_VERSION" || { echo "::error::NDK $NDK_VERSION non trovato in /opt/android-sdk/ndk"; exit 1; }
+
+      # Google non pubblica un NDK per host Linux aarch64: la toolchain della macchina è patchata
+      # per usare clang nativo invece di QEMU (idempotente, la patch è già sul NDK condiviso).
+      - name: Patch NDK aarch64 host toolchain
+        if: ${{ inputs.runner != 'github' && inputs.rust }}
+        uses: GabryXnLab/expo-ci/setup-ndk-aarch64-host@main
+
+      - name: Setup JDK 17 (GitHub runner)
+        if: ${{ inputs.runner == 'github' }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # I runner GitHub hanno già un SDK; l'NDK richiesto si installa se manca.
+      - name: Android SDK and NDK (GitHub runner)
+        if: ${{ inputs.runner == 'github' }}
+        env:
+          NDK_VERSION: ${{ inputs.ndk_version }}
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKMANAGER=$(ls "$SDK"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | sort -V | tail -1)
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          [ -d "$SDK/ndk/$NDK_VERSION" ] || "$SDKMANAGER" --install "ndk;$NDK_VERSION" >/dev/null
+          {
+            echo "ANDROID_HOME=$SDK"
+            echo "ANDROID_SDK_ROOT=$SDK"
+            echo "ANDROID_NDK_HOME=$SDK/ndk/$NDK_VERSION"
+            echo "ANDROID_NDK_ROOT=$SDK/ndk/$NDK_VERSION"
+          } >> "$GITHUB_ENV"
+
+      - name: Write local.properties
+        id: paths
+        env:
+          PROJECT_DIR: ${{ inputs.project_dir }}
+        run: |
+          echo "sdk.dir=$ANDROID_HOME" > "$PROJECT_DIR/local.properties"
+          # Prefisso per i glob degli artefatti dalla radice del workspace (project_dir '.' = nessuno).
+          d="${PROJECT_DIR#./}"; d="${d%/}"
+          if [ "$d" = "." ] || [ -z "$d" ]; then echo "prefix=" >> "$GITHUB_OUTPUT"; else echo "prefix=$d/" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Setup Rust
+        if: ${{ inputs.rust }}
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo cache (GitHub runner)
+        if: ${{ inputs.runner == 'github' && inputs.rust && inputs.clear_cache != true }}
+        uses: Swatinem/rust-cache@v2
+
+      # cargo-ndk sta nella cartella degli strumenti della CI (~/ci/tools, come da build-kit),
+      # mai installato di sistema; sui runner GitHub la cartella si riprende con actions/cache.
+      - name: Cache cargo-ndk (GitHub runner)
+        if: ${{ inputs.runner == 'github' && inputs.rust }}
+        uses: actions/cache@v4
+        with:
+          path: ~/ci/tools/cargo-ndk/${{ inputs.cargo_ndk_version }}
+          key: cargo-ndk-${{ inputs.cargo_ndk_version }}-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Install cargo-ndk
+        if: ${{ inputs.rust }}
+        env:
+          VER: ${{ inputs.cargo_ndk_version }}
+        run: |
+          set -euo pipefail
+          tools="$HOME/ci/tools/cargo-ndk/$VER"
+          if [ ! -x "$tools/bin/cargo-ndk" ]; then
+            cargo install cargo-ndk --version "$VER" --locked --root "$tools"
+          fi
+          echo "$tools/bin" >> "$GITHUB_PATH"
+
+      - name: Gradle cache (GitHub runner)
+        if: ${{ inputs.runner == 'github' && inputs.clear_cache != true }}
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
+
+      # Solo le cartelle del progetto: le cache condivise della macchina (~/.gradle, ccache,
+      # sccache) per questo run sono rese non fidate da build-kit/setup, non cancellate.
+      - name: Clear project caches
+        if: ${{ inputs.clear_cache == true }}
+        working-directory: ${{ inputs.project_dir }}
+        run: |
+          rm -rf build app/build .gradle */build
+          echo "Cache del progetto svuotate (clear_cache=true)"
+
+      # Firma: un APK firmato con l'impronta sbagliata non si distingue a occhio da uno giusto,
+      # e si vede solo sul dispositivo (Google Sign-In: DEVELOPER_ERROR). Dichiarato ma
+      # introvabile = ERRORE: tornare in silenzio alla firma di debug darebbe un artefatto che
+      # sembra buono.
+      - name: Resolve release signing
+        id: signing
+        if: ${{ inputs.signing_keystore != '' }}
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PROPS: ${{ secrets.ANDROID_KEYSTORE_PROPERTIES }}
+          KEYSTORE_NAME: ${{ inputs.signing_keystore }}
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/signing"
+          rm -rf "$DIR" && mkdir -p "$DIR" && chmod 700 "$DIR"
+          if [ -n "${KEYSTORE_B64:-}" ] && [ -n "${KEYSTORE_PROPS:-}" ]; then
+            printf '%s' "$KEYSTORE_B64" | base64 -d > "$DIR/ks.jks"
+            printf '%s\n' "$KEYSTORE_PROPS" > "$DIR/ks.properties"
+            echo "Keystore '$KEYSTORE_NAME' dai secret del repository."
+          elif [ -f "/home/ubuntu/secrets/$KEYSTORE_NAME.jks" ] \
+            && [ -f "/home/ubuntu/secrets/$KEYSTORE_NAME.properties" ]; then
+            cp "/home/ubuntu/secrets/$KEYSTORE_NAME.jks" "$DIR/ks.jks"
+            cp "/home/ubuntu/secrets/$KEYSTORE_NAME.properties" "$DIR/ks.properties"
+            echo "Keystore '$KEYSTORE_NAME' dal runner (/home/ubuntu/secrets)."
+          else
+            echo "ERROR: signing_keystore='$KEYSTORE_NAME' ma il keystore non c'è: né i secret"
+            echo "ANDROID_KEYSTORE_BASE64/ANDROID_KEYSTORE_PROPERTIES, né"
+            echo "/home/ubuntu/secrets/$KEYSTORE_NAME.jks(+.properties) sul runner."
+            exit 1
+          fi
+          chmod 600 "$DIR/ks.jks" "$DIR/ks.properties"
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+          # L'impronta attesa si legge dal keystore, non si scrive a mano da nessuna parte.
+          STORE_PW=$(grep -E '^storePassword=' "$DIR/ks.properties" | cut -d= -f2-)
+          echo "::add-mask::$STORE_PW"
+          SHA1=$(keytool -list -v -keystore "$DIR/ks.jks" -storepass "$STORE_PW" 2>/dev/null \
+                 | grep -m1 -oE 'SHA1: [0-9A-F:]+' | cut -d' ' -f2)
+          echo "sha1=$SHA1" >> "$GITHUB_OUTPUT"
+          echo "Firma release attesa: SHA-1 $SHA1"
+
+      # Il daemon resta spento (il runner uccide i processi a fine job). Worker e parallelo
+      # arrivano da GRADLE_OPTS (build-kit, input max_workers).
+      - name: Gradle build
+        id: build
+        working-directory: ${{ inputs.project_dir }}
+        env:
+          GRADLE_TASK: ${{ inputs.debug && ':app:assembleDebug' || inputs.gradle_task }}
+          CLEAR_CACHE: ${{ inputs.clear_cache }}
+          ABIS: ${{ inputs.abis }}
+          ABIS_PROPERTY: ${{ inputs.abis_property }}
+          SIGNING_DIR: ${{ steps.signing.outputs.dir }}
+          CARGO_IN_CHECKOUT: ${{ inputs.cargo_target_in_checkout }}
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          BUILD_CACHE_FLAG="--build-cache"
+          if [ "$CLEAR_CACHE" = "true" ]; then BUILD_CACHE_FLAG=""; fi
+          ARGS=()
+          [ -z "$ABIS" ] || ARGS+=("-P$ABIS_PROPERTY=$ABIS")
+          # Firma iniettata di AGP: sostituisce il signingConfig del buildType senza toccare il
+          # build.gradle del progetto.
+          if [ -n "${SIGNING_DIR:-}" ]; then
+            STORE_PW=$(grep -E '^storePassword=' "$SIGNING_DIR/ks.properties" | cut -d= -f2-)
+            KEY_ALIAS=$(grep -E '^keyAlias=' "$SIGNING_DIR/ks.properties" | cut -d= -f2-)
+            KEY_PW=$(grep -E '^keyPassword=' "$SIGNING_DIR/ks.properties" | cut -d= -f2-)
+            echo "::add-mask::$STORE_PW"
+            echo "::add-mask::$KEY_PW"
+            ARGS+=("-Pandroid.injected.signing.store.file=$SIGNING_DIR/ks.jks"
+                   "-Pandroid.injected.signing.store.password=$STORE_PW"
+                   "-Pandroid.injected.signing.key.alias=$KEY_ALIAS"
+                   "-Pandroid.injected.signing.key.password=$KEY_PW")
+          fi
+          ENV_PREFIX=()
+          if [ "$CARGO_IN_CHECKOUT" = "true" ]; then ENV_PREFIX=(env -u CARGO_TARGET_DIR); fi
+          # shellcheck disable=SC2086
+          "${ENV_PREFIX[@]}" ./gradlew $GRADLE_TASK --no-daemon $BUILD_CACHE_FLAG "${ARGS[@]}"
+          if [ -n "${RUSTC_WRAPPER:-}" ]; then "$RUSTC_WRAPPER" --show-stats | grep -E 'Cache (hits|misses)' || true; fi
+
+      - name: Verify artifact signature
+        if: ${{ inputs.signing_keystore != '' }}
+        working-directory: ${{ inputs.project_dir }}
+        env:
+          EXPECTED_SHA1: ${{ steps.signing.outputs.sha1 }}
+        run: |
+          set -euo pipefail
+          APKSIGNER=$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -1)
+          APK=$(find . -path '*/build/outputs/apk/*' -name '*.apk' | head -1)
+          [ -n "$APK" ] || { echo "ERROR: nessun APK da verificare (gradle_task non produce un APK?)"; exit 1; }
+          ACTUAL=$("$APKSIGNER" verify --print-certs "$APK" \
+                   | grep -m1 -oE 'SHA-1 digest: [0-9a-f]+' | cut -d' ' -f3 \
+                   | tr 'a-f' 'A-F' | sed 's/../&:/g;s/:$//')
+          echo "Atteso : $EXPECTED_SHA1"
+          echo "Trovato: $ACTUAL"
+          if [ "$ACTUAL" != "$EXPECTED_SHA1" ]; then
+            echo "ERROR: l'APK NON è firmato con il keystore richiesto."
+            exit 1
+          fi
+
+      # La quota di storage degli artifact è dell'org e piena non deve far fallire una build
+      # riuscita: la consegna vera è il file su Telegram.
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: ${{ inputs.artifact_name != '' && inputs.artifact_name || inputs.app_name }}-${{ github.sha }}
+          path: |
+            ${{ steps.paths.outputs.prefix }}**/build/outputs/apk/**/*.apk
+            ${{ steps.paths.outputs.prefix }}**/build/outputs/bundle/**/*.aab
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Notify via Telegram
+        if: ${{ always() }}
+        uses: GabryXnLab/build-kit/notify@main
+        with:
+          message_id: ${{ steps.started.outputs.message_id }}
+          run_inputs: ${{ toJSON(github.event.inputs) }}
+          bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat_id: ${{ secrets.TELEGRAM_CHAT_ID }}
+          topic_id: ${{ inputs.telegram_topic_id }}
+          status: ${{ job.status }}
+          title: ${{ inputs.app_name }} ${{ inputs.debug && 'debug' || 'release' }} (Android)
+          files: |
+            ${{ steps.paths.outputs.prefix }}**/build/outputs/apk/**/*.apk
+            ${{ steps.paths.outputs.prefix }}**/build/outputs/bundle/**/*.aab
