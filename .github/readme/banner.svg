@@ -18,9 +18,9 @@
 <text x="818" y="69" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="400" fill="#D1D5DB">flutter-ci</text>
 <rect x="800" y="82" width="340" height="28" rx="14" fill="none" stroke="#A78BFA" stroke-opacity="0.55"/>
 <text x="818" y="101" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="400" fill="#D1D5DB">expo-ci</text>
-<rect x="800" y="114" width="340" height="28" rx="14" fill="none" stroke="#FB7185" stroke-opacity="0.55"/>
+<rect x="800" y="114" width="340" height="28" rx="14" fill="none" stroke="#34D1BF" stroke-opacity="0.55"/>
 <text x="818" y="133" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="400" fill="#D1D5DB">desktop-ci</text>
-<rect x="800" y="146" width="340" height="28" rx="14" fill="#34D1BF" stroke="#34D1BF"/>
+<rect x="800" y="146" width="340" height="28" rx="14" fill="#3DDC84" stroke="#3DDC84"/>
 <text x="818" y="165" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="700" fill="#111827">android-ci  ← qui</text>
 <rect x="800" y="192" width="340" height="28" rx="14" fill="none" stroke="#F5B544" stroke-opacity="0.55"/>
 <text x="818" y="211" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="400" fill="#D1D5DB">build-kit</text>
