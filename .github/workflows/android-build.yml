@@ -17,7 +17,9 @@ on:
         required: true
         type: string
       runner:
-        description: 'self-hosted (nexus-core, ARM64) | github (runner GitHub-hosted)'
+        description: >-
+          self-hosted (nexus-core, ARM64) | github (runner GitHub-hosted) | auto (sceglie
+          build-kit/pick-runner: nexus-core, ohos o Ubicloud, il primo con capacità libera)
         required: false
         default: 'self-hosted'
         type: string
@@ -103,6 +105,26 @@ on:
         required: false
         default: '["self-hosted","nexus-core"]'
         type: string
+      allow:
+        description: 'Con runner=auto: livelli ammessi (nexus,ohos,ubicloud). Serve a provare un livello solo, es. ubicloud.'
+        required: false
+        default: 'nexus,ohos,ubicloud'
+        type: string
+      pick_repos:
+        description: 'Con runner=auto: repo in cui contare i job in coda (nome, virgola-separati)'
+        required: false
+        default: 'kagami-private,Riftgate,ascend'
+        type: string
+      ubicloud_size:
+        description: 'Con runner=auto: vCPU di ubicloud-standard-<N>'
+        required: false
+        default: '8'
+        type: string
+      remote_cache:
+        description: 'true → cache remota (build-kit/setup) anche su nexus-core; su ohos e Ubicloud con auto è sempre accesa'
+        required: false
+        default: false
+        type: boolean
       ref:
         description: 'Branch/tag/SHA da buildare. Vuoto = quello del run.'
         required: false
@@ -119,6 +141,20 @@ on:
         default: ''
         type: string
     secrets:
+      RUNNER_PICK_TOKEN:
+        required: false
+      BUILD_CACHE_S3:
+        required: false
+      # Firma di release nei secret del repo (stessi nomi in tutti gli stack): hanno la precedenza sul
+      # keystore della macchina e sui vecchi ANDROID_KEYSTORE_*.
+      RELEASE_KEYSTORE_B64:
+        required: false
+      RELEASE_KEYSTORE_PASSWORD:
+        required: false
+      RELEASE_KEY_ALIAS:
+        required: false
+      RELEASE_KEY_PASSWORD:
+        required: false
       TELEGRAM_BOT_TOKEN:
         required: false
       TELEGRAM_CHAT_ID:
@@ -129,20 +165,62 @@ on:
         required: false
 
 jobs:
+  pick:
+    if: ${{ inputs.runner == 'auto' }}
+    runs-on: ubuntu-slim
+    outputs:
+      runs_on: ${{ steps.pick.outputs.runs_on }}
+      profile: ${{ steps.pick.outputs.profile }}
+    steps:
+      - id: pick
+        uses: GabryXnLab/build-kit/pick-runner@auto-runner
+        with:
+          token: ${{ secrets.RUNNER_PICK_TOKEN }}
+          repos: ${{ inputs.pick_repos }}
+          ubicloud_size: ${{ inputs.ubicloud_size }}
+          # Una firma che esiste solo sul disco di nexus-core vincola la build a nexus-core.
+          allow: ${{ inputs.signing_keystore != '' && secrets.RELEASE_KEYSTORE_B64 == '' && secrets.ANDROID_KEYSTORE_BASE64 == '' && 'nexus' || inputs.allow }}
+
   build:
     name: Android ${{ inputs.debug && 'debug' || 'build' }} (${{ inputs.abis }})
-    runs-on: ${{ inputs.runner == 'github' && fromJSON(format('["{0}"]', inputs.github_runner_label)) || fromJSON(inputs.selfhosted_runner) }}
+    needs: pick
+    if: ${{ !cancelled() && needs.pick.result != 'failure' }}
+    runs-on: ${{ inputs.runner == 'auto' && fromJSON(needs.pick.outputs.runs_on) || inputs.runner == 'github' && fromJSON(format('["{0}"]', inputs.github_runner_label)) || fromJSON(inputs.selfhosted_runner) }}
     defaults:
       run:
         shell: bash
     steps:
-      - name: Validate inputs
+      # profile decide gli step: nexus (ARM64, cartelle di /home/ubuntu e /opt), ohos (self-hosted
+      # senza quelle cartelle), ephemeral (GitHub o Ubicloud, x86-64, macchina nuova a ogni job).
+      - name: Validate inputs and resolve profile
+        id: profile
         env:
           RUNNER_KIND: ${{ inputs.runner }}
+          PICKED: ${{ needs.pick.outputs.profile }}
+          REMOTE_CACHE_INPUT: ${{ inputs.remote_cache }}
         run: |
-          if [ "$RUNNER_KIND" != "self-hosted" ] && [ "$RUNNER_KIND" != "github" ]; then
-            echo "::error::runner non valido: '$RUNNER_KIND' (attesi: self-hosted | github)"; exit 1
-          fi
+          set -euo pipefail
+          case "$RUNNER_KIND" in
+            self-hosted) PROFILE=nexus; SETUP_RUNNER=self-hosted ;;
+            github)      PROFILE=ephemeral; SETUP_RUNNER=github ;;
+            auto)
+              PROFILE=$PICKED
+              case "$PROFILE" in
+                nexus) SETUP_RUNNER=self-hosted ;;
+                ohos) SETUP_RUNNER=ohos ;;
+                ephemeral) SETUP_RUNNER=ubicloud ;;
+                *) echo "::error::profilo del runner scelto non valido: '$PROFILE'"; exit 1 ;;
+              esac ;;
+            *) echo "::error::runner non valido: '$RUNNER_KIND' (attesi: self-hosted | github | auto)"; exit 1 ;;
+          esac
+          REMOTE=false
+          if [ "$REMOTE_CACHE_INPUT" = "true" ] || { [ "$RUNNER_KIND" = "auto" ] && [ "$PROFILE" != "nexus" ]; }; then REMOTE=true; fi
+          echo "Profilo $PROFILE (runner=$RUNNER_KIND, setup=$SETUP_RUNNER, cache remota=$REMOTE)"
+          {
+            echo "value=$PROFILE"
+            echo "setup_runner=$SETUP_RUNNER"
+            echo "remote_cache=$REMOTE"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Notify start via Telegram
         id: started
@@ -160,21 +238,38 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
-          clean: ${{ inputs.runner == 'github' || inputs.clear_cache == true }}
+          clean: ${{ steps.profile.outputs.value != 'nexus' || inputs.clear_cache == true }}
 
       - name: Tune build
         id: tune
-        uses: GabryXnLab/build-kit/setup@main
+        uses: GabryXnLab/build-kit/setup@auto-runner
         with:
-          runner: ${{ inputs.runner }}
+          runner: ${{ steps.profile.outputs.setup_runner }}
           max_workers: ${{ inputs.max_workers }}
           clear_cache: ${{ inputs.clear_cache }}
           rust: ${{ inputs.rust && 'true' || 'false' }}
+          remote_cache: ${{ steps.profile.outputs.remote_cache }}
+          cache_env: ${{ steps.profile.outputs.value == 'ephemeral' && secrets.BUILD_CACHE_S3 || '' }}
 
       # ── Ambiente Android ───────────────────────────────────────────────────────────────
       # Self-hosted: JDK, SDK e NDK condivisi della macchina, che si usano e non si modificano.
+      - name: Android environment (ohos)
+        if: ${{ steps.profile.outputs.value == 'ohos' }}
+        env:
+          NDK_VERSION: ${{ inputs.ndk_version }}
+        run: |
+          set -euo pipefail
+          # Il toolchain Android di ohos (SDK, NDK, JDK) arriva dall'ambiente del runner (fase 2b).
+          : "${ANDROID_HOME:?ohos: ANDROID_HOME non impostato, toolchain Android non pronta}"
+          test -d "$ANDROID_HOME/ndk/$NDK_VERSION" || { echo "::error::NDK $NDK_VERSION non trovato in $ANDROID_HOME/ndk"; exit 1; }
+          {
+            echo "ANDROID_SDK_ROOT=$ANDROID_HOME"
+            echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION"
+            echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/$NDK_VERSION"
+          } >> "$GITHUB_ENV"
+
       - name: Android environment (self-hosted)
-        if: ${{ inputs.runner != 'github' }}
+        if: ${{ steps.profile.outputs.value == 'nexus' }}
         env:
           NDK_VERSION: ${{ inputs.ndk_version }}
         run: |
@@ -191,11 +286,11 @@ jobs:
       # Google non pubblica un NDK per host Linux aarch64: la toolchain della macchina è patchata
       # per usare clang nativo invece di QEMU (idempotente, la patch è già sul NDK condiviso).
       - name: Patch NDK aarch64 host toolchain
-        if: ${{ inputs.runner != 'github' && inputs.rust }}
+        if: ${{ steps.profile.outputs.value == 'nexus' && inputs.rust }}
         uses: GabryXnLab/expo-ci/setup-ndk-aarch64-host@main
 
       - name: Setup JDK 17 (GitHub runner)
-        if: ${{ inputs.runner == 'github' }}
+        if: ${{ steps.profile.outputs.value == 'ephemeral' }}
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -203,7 +298,7 @@ jobs:
 
       # I runner GitHub hanno già un SDK; l'NDK richiesto si installa se manca.
       - name: Android SDK and NDK (GitHub runner)
-        if: ${{ inputs.runner == 'github' }}
+        if: ${{ steps.profile.outputs.value == 'ephemeral' }}
         env:
           NDK_VERSION: ${{ inputs.ndk_version }}
         run: |
@@ -234,13 +329,13 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cargo cache (GitHub runner)
-        if: ${{ inputs.runner == 'github' && inputs.rust && inputs.clear_cache != true }}
+        if: ${{ steps.profile.outputs.value == 'ephemeral' && inputs.rust && inputs.clear_cache != true }}
         uses: Swatinem/rust-cache@v2
 
       # cargo-ndk sta nella cartella degli strumenti della CI (~/ci/tools, come da build-kit),
       # mai installato di sistema; sui runner GitHub la cartella si riprende con actions/cache.
       - name: Cache cargo-ndk (GitHub runner)
-        if: ${{ inputs.runner == 'github' && inputs.rust }}
+        if: ${{ steps.profile.outputs.value == 'ephemeral' && inputs.rust }}
         uses: actions/cache@v4
         with:
           path: ~/ci/tools/cargo-ndk/${{ inputs.cargo_ndk_version }}
@@ -259,7 +354,7 @@ jobs:
           echo "$tools/bin" >> "$GITHUB_PATH"
 
       - name: Gradle cache (GitHub runner)
-        if: ${{ inputs.runner == 'github' && inputs.clear_cache != true }}
+        if: ${{ steps.profile.outputs.value == 'ephemeral' && inputs.clear_cache != true }}
         uses: gradle/actions/setup-gradle@v4
         with:
           cache-read-only: false
@@ -281,6 +376,10 @@ jobs:
         id: signing
         if: ${{ inputs.signing_keystore != '' }}
         env:
+          RELEASE_B64: ${{ secrets.RELEASE_KEYSTORE_B64 }}
+          RELEASE_STORE_PW: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          RELEASE_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PW: ${{ secrets.RELEASE_KEY_PASSWORD }}
           KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           KEYSTORE_PROPS: ${{ secrets.ANDROID_KEYSTORE_PROPERTIES }}
           KEYSTORE_NAME: ${{ inputs.signing_keystore }}
@@ -288,7 +387,13 @@ jobs:
           set -euo pipefail
           DIR="$RUNNER_TEMP/signing"
           rm -rf "$DIR" && mkdir -p "$DIR" && chmod 700 "$DIR"
-          if [ -n "${KEYSTORE_B64:-}" ] && [ -n "${KEYSTORE_PROPS:-}" ]; then
+          if [ -n "${RELEASE_B64:-}" ] && [ -n "${RELEASE_STORE_PW:-}" ] && [ -n "${RELEASE_ALIAS:-}" ] && [ -n "${RELEASE_KEY_PW:-}" ]; then
+            echo "::add-mask::$RELEASE_STORE_PW"
+            echo "::add-mask::$RELEASE_KEY_PW"
+            printf '%s' "$RELEASE_B64" | base64 -d > "$DIR/ks.jks"
+            printf 'storePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' "$RELEASE_STORE_PW" "$RELEASE_ALIAS" "$RELEASE_KEY_PW" > "$DIR/ks.properties"
+            echo "Keystore '$KEYSTORE_NAME' dai secret RELEASE_* del repository."
+          elif [ -n "${KEYSTORE_B64:-}" ] && [ -n "${KEYSTORE_PROPS:-}" ]; then
             printf '%s' "$KEYSTORE_B64" | base64 -d > "$DIR/ks.jks"
             printf '%s\n' "$KEYSTORE_PROPS" > "$DIR/ks.properties"
             echo "Keystore '$KEYSTORE_NAME' dai secret del repository."
@@ -299,7 +404,8 @@ jobs:
             echo "Keystore '$KEYSTORE_NAME' dal runner (/home/ubuntu/secrets)."
           else
             echo "ERROR: signing_keystore='$KEYSTORE_NAME' ma il keystore non c'è: né i secret"
-            echo "ANDROID_KEYSTORE_BASE64/ANDROID_KEYSTORE_PROPERTIES, né"
+            echo "RELEASE_KEYSTORE_B64/RELEASE_KEYSTORE_PASSWORD/RELEASE_KEY_ALIAS/RELEASE_KEY_PASSWORD,"
+            echo "né ANDROID_KEYSTORE_BASE64/ANDROID_KEYSTORE_PROPERTIES, né"
             echo "/home/ubuntu/secrets/$KEYSTORE_NAME.jks(+.properties) sul runner."
             exit 1
           fi
@@ -370,6 +476,12 @@ jobs:
             echo "ERROR: l'APK NON è firmato con il keystore richiesto."
             exit 1
           fi
+
+      - name: Remove signing material
+        if: ${{ always() && steps.signing.outputs.dir != '' }}
+        env:
+          SIGNING_DIR: ${{ steps.signing.outputs.dir }}
+        run: rm -rf "$SIGNING_DIR"
 
       # La quota di storage degli artifact è dell'org e piena non deve far fallire una build
       # riuscita: la consegna vera è il file su Telegram.
