@@ -118,6 +118,20 @@ on:
         required: false
         default: ''
         type: string
+      updater_artifact:
+        description: >-
+          Nome dell'artifact (es. packages-android-arm64: la cartella dice OS e ABI) che porta l'APK appena costruito con la
+          sua firma minisign `.sig` (stessa chiave dell'updater desktop, TAURI_SIGNING_PRIVATE_KEY),
+          piatto e senza suffisso: è il formato di cartella che il job `publish` di gpui-build.yml
+          raccoglie per comporre il manifest. L'APK deve essere uno solo (una ABI per run). Vuoto = niente.
+        required: false
+        default: ''
+        type: string
+      cargo_packager_version:
+        description: 'Versione di cargo-packager, usato solo per firmare (`signer sign`) con updater_artifact'
+        required: false
+        default: '0.11.8'
+        type: string
     secrets:
       TELEGRAM_BOT_TOKEN:
         required: false
@@ -126,6 +140,11 @@ on:
       ANDROID_KEYSTORE_BASE64:
         required: false
       ANDROID_KEYSTORE_PROPERTIES:
+        required: false
+      # Chiave minisign dell'updater (stesso formato di gpui-build.yml): firma l'APK di updater_artifact.
+      TAURI_SIGNING_PRIVATE_KEY:
+        required: false
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
         required: false
 
 jobs:
@@ -370,6 +389,51 @@ jobs:
             echo "ERROR: l'APK NON è firmato con il keystore richiesto."
             exit 1
           fi
+
+      # Sul self-hosted lo strumento resta in ~/ci/tools, una versione per cartella; su GitHub si compila nel run.
+      - name: Install cargo-packager (signer)
+        if: ${{ inputs.updater_artifact != '' }}
+        env:
+          VERSION: ${{ inputs.cargo_packager_version }}
+          SELF_HOSTED: ${{ inputs.runner != 'github' }}
+        run: |
+          set -euo pipefail
+          if [ "$SELF_HOSTED" = "true" ]; then root="$HOME/ci/tools/cargo-packager-$VERSION"; else root="$RUNNER_TEMP/cargo-packager"; fi
+          if [ ! -x "$root/bin/cargo-packager" ]; then
+            CARGO_TARGET_DIR="$RUNNER_TEMP/cargo-packager-build" cargo install cargo-packager --locked --version "$VERSION" --root "$root"
+          fi
+          echo "$root/bin" >> "$GITHUB_PATH"
+
+      - name: Sign APK for the updater
+        id: updater
+        if: ${{ inputs.updater_artifact != '' }}
+        env:
+          PREFIX: ${{ steps.paths.outputs.prefix }}
+          ARTIFACT: ${{ inputs.updater_artifact }}
+          SIGN_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          SIGN_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [ -n "$SIGN_KEY" ] || { echo "::error::updater_artifact richiede il secret TAURI_SIGNING_PRIVATE_KEY"; exit 1; }
+          mapfile -t apks < <(find "${PREFIX:-.}" -path '*/build/outputs/apk/*' -name '*.apk')
+          [ "${#apks[@]}" -eq 1 ] || { echo "::error::attesi 1 APK per updater_artifact, trovati ${#apks[@]}: ${apks[*]:-}"; exit 1; }
+          out="$RUNNER_TEMP/updater-apk"; rm -rf "$out"; mkdir -p "$out"
+          # Nome unico per ABI (<repo>-android-arm64.apk): gli asset di una release sono piatti, e
+          # app-direct-release.apk sarebbe lo stesso per tutte le ABI.
+          name="${GITHUB_REPOSITORY#*/}-${ARTIFACT#packages-}.apk"
+          cp "${apks[0]}" "$out/$name"
+          cargo packager signer sign --private-key "$SIGN_KEY" --password "$SIGN_PASSWORD" "$out/$name"
+          ls -la "$out"
+          echo "dir=$out" >> "$GITHUB_OUTPUT"
+
+      - name: Upload updater package
+        if: ${{ inputs.updater_artifact != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.updater_artifact }}
+          path: ${{ steps.updater.outputs.dir }}
+          if-no-files-found: error
+          retention-days: 3
 
       # La quota di storage degli artifact è dell'org e piena non deve far fallire una build
       # riuscita: la consegna vera è il file su Telegram.
