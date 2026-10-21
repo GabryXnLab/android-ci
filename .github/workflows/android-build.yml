@@ -426,9 +426,13 @@ jobs:
           ls -la "$out"
           echo "dir=$out" >> "$GITHUB_OUTPUT"
 
+      # Quota piena o rete: non devono far fallire una build riuscita né impedire l'invio su Telegram
+      # (che parte dai file sul runner, nello step finale). L'esito sta in «Artifact warnings».
       - name: Upload updater package
+        id: upload_updater
         if: ${{ inputs.updater_artifact != '' }}
         uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: ${{ inputs.updater_artifact }}
           path: ${{ steps.updater.outputs.dir }}
@@ -438,6 +442,7 @@ jobs:
       # La quota di storage degli artifact è dell'org e piena non deve far fallire una build
       # riuscita: la consegna vera è il file su Telegram.
       - name: Upload artifact
+        id: upload_apk
         uses: actions/upload-artifact@v4
         continue-on-error: true
         with:
@@ -447,6 +452,33 @@ jobs:
             ${{ steps.paths.outputs.prefix }}**/build/outputs/bundle/**/*.aab
           if-no-files-found: warn
           retention-days: 3
+
+      - name: Artifact warnings
+        id: warnings
+        if: ${{ always() }}
+        env:
+          APK_OUTCOME: ${{ steps.upload_apk.outcome }}
+          UPDATER_OUTCOME: ${{ steps.upload_updater.outcome }}
+          UPDATER_NAME: ${{ inputs.updater_artifact }}
+          PREFIX: ${{ steps.paths.outputs.prefix }}
+        run: |
+          set -uo pipefail
+          out="$RUNNER_TEMP/artifact-warnings.txt"; : > "$out"
+          warn() { echo "::warning::$1"; echo "$1" >> "$out"; }
+          if [ "$APK_OUTCOME" = "failure" ]; then
+            warn "Upload artifact APK fallito (quota artifact piena?): l'APK è comunque su Telegram, non negli artifact del run."
+          fi
+          if [ "$UPDATER_OUTCOME" = "failure" ]; then
+            warn "Upload $UPDATER_NAME fallito (quota artifact piena?): la release NON potrà raccogliere gli APK, va rilanciata a quota libera."
+          fi
+          # sendDocument della Bot API cloud accetta fino a 50 MB; con un server locale sul runner il limite è ~2 GB.
+          while IFS= read -r f; do
+            bytes=$(stat -c%s "$f" 2>/dev/null || echo 0)
+            if [ "$bytes" -gt 52428800 ]; then
+              warn "$(basename "$f") pesa $((bytes / 1024 / 1024)) MB: oltre 50 MB Telegram lo accetta solo con un server Bot API locale sul runner."
+            fi
+          done < <(find "${PREFIX:-.}" -path '*/build/outputs/apk/*' -name '*.apk' 2>/dev/null)
+          exit 0
 
       - name: Notify via Telegram
         if: ${{ always() }}
@@ -459,6 +491,7 @@ jobs:
           topic_id: ${{ inputs.telegram_topic_id }}
           status: ${{ job.status }}
           title: ${{ inputs.app_name }} ${{ inputs.debug && 'debug' || 'release' }} (Android)
+          details_file: ${{ runner.temp }}/artifact-warnings.txt
           files: |
             ${{ steps.paths.outputs.prefix }}**/build/outputs/apk/**/*.apk
             ${{ steps.paths.outputs.prefix }}**/build/outputs/bundle/**/*.aab
