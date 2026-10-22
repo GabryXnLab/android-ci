@@ -173,7 +173,7 @@ jobs:
       profile: ${{ steps.pick.outputs.profile }}
     steps:
       - id: pick
-        uses: GabryXnLab/build-kit/pick-runner@auto-runner
+        uses: GabryXnLab/build-kit/pick-runner@main
         with:
           token: ${{ secrets.RUNNER_PICK_TOKEN }}
           repos: ${{ inputs.pick_repos }}
@@ -242,7 +242,7 @@ jobs:
 
       - name: Tune build
         id: tune
-        uses: GabryXnLab/build-kit/setup@auto-runner
+        uses: GabryXnLab/build-kit/setup@main
         with:
           runner: ${{ steps.profile.outputs.setup_runner }}
           max_workers: ${{ inputs.max_workers }}
