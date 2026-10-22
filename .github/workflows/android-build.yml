@@ -110,6 +110,11 @@ on:
         required: false
         default: 'nexus,ohos,ubicloud'
         type: string
+      flake_dir:
+        description: 'Solo profilo ohos: cartella del flake (flake.nix, flake.lock) con il devShell Android/Rust, relativa alla radice del repo.'
+        required: false
+        default: '.'
+        type: string
       pick_repos:
         description: 'Con runner=auto: repo in cui contare i job in coda (nome, virgola-separati)'
         required: false
@@ -192,7 +197,7 @@ jobs:
       profile: ${{ steps.pick.outputs.profile }}
     steps:
       - id: pick
-        uses: GabryXnLab/build-kit/pick-runner@main
+        uses: GabryXnLab/build-kit/pick-runner@ohos-stack
         with:
           token: ${{ secrets.RUNNER_PICK_TOKEN }}
           repos: ${{ inputs.pick_repos }}
@@ -243,7 +248,7 @@ jobs:
 
       - name: Notify start via Telegram
         id: started
-        uses: GabryXnLab/build-kit/notify@main
+        uses: GabryXnLab/build-kit/notify@ohos-stack
         with:
           run_inputs: ${{ toJSON(github.event.inputs) }}
           bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -259,9 +264,17 @@ jobs:
           ref: ${{ inputs.ref }}
           clean: ${{ steps.profile.outputs.value != 'nexus' || inputs.clear_cache == true }}
 
+      # ohos (NixOS): JDK, SDK, NDK e toolchain Rust arrivano dal devShell del flake del progetto, non da
+      # rustup/apt. Prima di `setup`, che aggiunge i suoi -D a GRADLE_OPTS del devShell (aapt2 nello store).
+      - name: Nix devShell (ohos)
+        if: ${{ steps.profile.outputs.value == 'ohos' }}
+        uses: GabryXnLab/build-kit/nix-env@ohos-stack
+        with:
+          flake_dir: ${{ inputs.flake_dir }}
+
       - name: Tune build
         id: tune
-        uses: GabryXnLab/build-kit/setup@main
+        uses: GabryXnLab/build-kit/setup@ohos-stack
         with:
           runner: ${{ steps.profile.outputs.setup_runner }}
           max_workers: ${{ inputs.max_workers }}
@@ -278,7 +291,7 @@ jobs:
           NDK_VERSION: ${{ inputs.ndk_version }}
         run: |
           set -euo pipefail
-          # Il toolchain Android di ohos (SDK, NDK, JDK) arriva dall'ambiente del runner (fase 2b).
+          # SDK, NDK e JDK di ohos arrivano dal devShell caricato da build-kit/nix-env.
           : "${ANDROID_HOME:?ohos: ANDROID_HOME non impostato, toolchain Android non pronta}"
           test -d "$ANDROID_HOME/ndk/$NDK_VERSION" || { echo "::error::NDK $NDK_VERSION non trovato in $ANDROID_HOME/ndk"; exit 1; }
           {
@@ -344,7 +357,7 @@ jobs:
           if [ "$d" = "." ] || [ -z "$d" ]; then echo "prefix=" >> "$GITHUB_OUTPUT"; else echo "prefix=$d/" >> "$GITHUB_OUTPUT"; fi
 
       - name: Setup Rust
-        if: ${{ inputs.rust }}
+        if: ${{ inputs.rust && steps.profile.outputs.value != 'ohos' }}
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cargo cache (GitHub runner)
@@ -594,7 +607,7 @@ jobs:
 
       - name: Notify via Telegram
         if: ${{ always() }}
-        uses: GabryXnLab/build-kit/notify@main
+        uses: GabryXnLab/build-kit/notify@ohos-stack
         with:
           message_id: ${{ steps.started.outputs.message_id }}
           run_inputs: ${{ toJSON(github.event.inputs) }}
