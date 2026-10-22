@@ -37,6 +37,12 @@ actionlint .github/workflows/android-build.yml   # se installato
   `max_workers`, `clear_cache`, con le descrizioni di `build-kit`. `runner: github` usa
   `github_runner_label` (default `ubuntu-24.04`, x86-64: l'NDK 27 ha toolchain solo x86-64 per
   Linux; `ubuntu-24.04-arm` serve un NDK con host aarch64).
+- **`runner: auto` e profilo**: il job `pick` (`build-kit/pick-runner`, secret
+  `RUNNER_PICK_TOKEN`) sceglie nexus-core, ohos o Ubicloud; il profilo `nexus|ohos|ephemeral` decide gli
+  step (non più `inputs.runner`). `ephemeral` = come `github` (Ubicloud x86-64: niente patch NDK aarch64,
+  `setup` con `remote_cache` e `BUILD_CACHE_S3`, sccache S3 per il core Rust). Input `allow` per provare un
+  solo livello. Con `signing_keystore` e senza secret `RELEASE_*`/`ANDROID_KEYSTORE_*` il pick ammette solo nexus.
+  Su ohos l'ambiente Android (`ANDROID_HOME` con l'NDK) deve arrivare dal runner: fase 2b, non collaudato.
 - **Self-hosted (nexus-core, ARM64)**: JDK 17, `/opt/android-sdk` e NDK condivisi si usano, non
   si modificano; la toolchain NDK è quella patchata per host aarch64
   (`expo-ci/setup-ndk-aarch64-host`, idempotente). Daemon di Gradle spento; worker da
@@ -44,6 +50,9 @@ actionlint .github/workflows/android-build.yml   # se installato
 - **Su `runner: github` la cache è di GitHub, nel reusable** (regola di `build-kit`): `setup-gradle`,
   `rust-cache`, `actions/cache` per cargo-ndk, tutte con `if` sul runner e spente da `clear_cache`.
   SDK e NDK: quelli dell'immagine, l'NDK richiesto installato con `sdkmanager` se manca.
+- **Firma, secret `RELEASE_*`**: `RELEASE_KEYSTORE_B64`, `RELEASE_KEYSTORE_PASSWORD`, `RELEASE_KEY_ALIAS`,
+  `RELEASE_KEY_PASSWORD` (stessi nomi in tutti gli stack) hanno la precedenza; il keystore è un file temporaneo
+  di `$RUNNER_TEMP/signing`, cancellato a fine job. Seguono `ANDROID_KEYSTORE_*` e il file della macchina.
 - **Firma (`signing_keystore`)**: stessa semantica di `expo-ci`: keystore in
   `/home/ubuntu/secrets/<nome>.{jks,properties}` del runner o nei secret
   `ANDROID_KEYSTORE_BASE64`/`ANDROID_KEYSTORE_PROPERTIES`; firma per `-Pandroid.injected.signing.*`;
