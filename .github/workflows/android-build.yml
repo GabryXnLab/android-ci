@@ -287,7 +287,7 @@ jobs:
 
       - name: Tune build
         id: tune
-        uses: GabryXnLab/build-kit/setup@build-veloci-f1
+        uses: GabryXnLab/build-kit/setup@main
         with:
           runner: ${{ steps.profile.outputs.setup_runner }}
           max_workers: ${{ inputs.max_workers }}
@@ -375,7 +375,7 @@ jobs:
 
       - name: Restore dependency archives (S3)
         if: ${{ steps.profile.outputs.s3c == 'true' }}
-        uses: GabryXnLab/build-kit/s3-cache@build-veloci-f1
+        uses: GabryXnLab/build-kit/s3-cache@main
         with:
           mode: restore
           stack: android
@@ -576,7 +576,7 @@ jobs:
       # (che parte dai file sul runner, nello step finale). L'esito sta in «Artifact warnings».
       - name: Save dependency archives (S3)
         if: ${{ success() && steps.profile.outputs.s3c == 'true' }}
-        uses: GabryXnLab/build-kit/s3-cache@build-veloci-f1
+        uses: GabryXnLab/build-kit/s3-cache@main
         with:
           mode: save
           stack: android
@@ -647,7 +647,7 @@ jobs:
       - name: Cache summary
         id: cache_summary
         if: ${{ always() }}
-        uses: GabryXnLab/build-kit/summary@build-veloci-f1
+        uses: GabryXnLab/build-kit/summary@main
         with:
           token: ${{ secrets.RUNNER_PICK_TOKEN || github.token }}
           stack: android
