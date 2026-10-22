@@ -213,6 +213,12 @@ jobs:
     defaults:
       run:
         shell: bash
+    env:
+      # Dipendenze come archivi sul bucket S3 (build-kit/s3-cache) al posto di actions/cache e
+      # rust-cache, solo con ohos e Ubicloud; nexus e il runner GitHub restano come prima.
+      S3C_GRADLE: gradle-modules|~/.gradle/caches/modules-2|**/*.gradle,**/*.gradle.kts,**/gradle-wrapper.properties,**/libs.versions.toml|gradle-1
+      S3C_WRAPPER: gradle-wrapper|~/.gradle/wrapper/dists|**/gradle-wrapper.properties|gradle-1
+      S3C_CARGO: ${{ inputs.rust && 'cargo-registry|~/.cargo/registry ~/.cargo/git|**/Cargo.lock|rust-stable' || '' }}
     steps:
       # profile decide gli step: nexus (ARM64, cartelle di /home/ubuntu e /opt), ohos (self-hosted
       # senza quelle cartelle), ephemeral (GitHub o Ubicloud, x86-64, macchina nuova a ogni job).
@@ -244,6 +250,7 @@ jobs:
             echo "value=$PROFILE"
             echo "setup_runner=$SETUP_RUNNER"
             echo "remote_cache=$REMOTE"
+            echo "s3c=$([ "$RUNNER_KIND" = "auto" ] && [ "$PROFILE" != "nexus" ] && echo true || echo false)"
           } >> "$GITHUB_OUTPUT"
 
       - name: Notify start via Telegram
@@ -360,8 +367,21 @@ jobs:
         if: ${{ inputs.rust && steps.profile.outputs.value != 'ohos' }}
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Restore dependency archives (S3)
+        if: ${{ steps.profile.outputs.s3c == 'true' }}
+        uses: GabryXnLab/build-kit/s3-cache@s3-cache
+        with:
+          mode: restore
+          stack: android
+          items: |
+            ${{ env.S3C_GRADLE }}
+            ${{ env.S3C_WRAPPER }}
+            ${{ env.S3C_CARGO }}
+          cache_env: ${{ steps.profile.outputs.value == 'ephemeral' && secrets.BUILD_CACHE_S3 || '' }}
+          clear_cache: ${{ inputs.clear_cache }}
+
       - name: Cargo cache (GitHub runner)
-        if: ${{ steps.profile.outputs.value == 'ephemeral' && inputs.rust && inputs.clear_cache != true }}
+        if: ${{ steps.profile.outputs.value == 'ephemeral' && steps.profile.outputs.s3c != 'true' && inputs.rust && inputs.clear_cache != true }}
         uses: Swatinem/rust-cache@v2
 
       # cargo-ndk sta nella cartella degli strumenti della CI (~/ci/tools, come da build-kit),
@@ -390,6 +410,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           cache-read-only: false
+          cache-disabled: ${{ steps.profile.outputs.s3c == 'true' }}
 
       # Solo le cartelle del progetto: le cache condivise della macchina (~/.gradle, ccache,
       # sccache) per questo run sono rese non fidate da build-kit/setup, non cancellate.
@@ -547,6 +568,18 @@ jobs:
 
       # Quota piena o rete: non devono far fallire una build riuscita né impedire l'invio su Telegram
       # (che parte dai file sul runner, nello step finale). L'esito sta in «Artifact warnings».
+      - name: Save dependency archives (S3)
+        if: ${{ success() && steps.profile.outputs.s3c == 'true' }}
+        uses: GabryXnLab/build-kit/s3-cache@s3-cache
+        with:
+          mode: save
+          stack: android
+          items: |
+            ${{ env.S3C_GRADLE }}
+            ${{ env.S3C_WRAPPER }}
+            ${{ env.S3C_CARGO }}
+          cache_env: ${{ steps.profile.outputs.value == 'ephemeral' && secrets.BUILD_CACHE_S3 || '' }}
+
       - name: Upload updater package
         id: upload_updater
         if: ${{ inputs.updater_artifact != '' }}
