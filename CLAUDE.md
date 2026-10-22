@@ -42,7 +42,9 @@ actionlint .github/workflows/android-build.yml   # se installato
   step (non più `inputs.runner`). `ephemeral` = come `github` (Ubicloud x86-64: niente patch NDK aarch64,
   `setup` con `remote_cache` e `BUILD_CACHE_S3`, sccache S3 per il core Rust). Input `allow` per provare un
   solo livello. Con `signing_keystore` e senza secret `RELEASE_*`/`ANDROID_KEYSTORE_*` il pick ammette solo nexus.
-  Su ohos l'ambiente Android (`ANDROID_HOME` con l'NDK) deve arrivare dal runner: fase 2b, non collaudato.
+  Su ohos l'ambiente (JDK, SDK/NDK, Rust, cargo-ndk) viene dal devShell del flake del progetto, caricato da
+  `build-kit/nix-env` prima di `setup` (input `flake_dir`, default radice); `dtolnay/rust-toolchain` è saltato. Collaudato con
+  Riftgate (APK x86_64 firmato 10:CB:26…, 35 min a freddo); SDK dello store in sola lettura.
 - **Self-hosted (nexus-core, ARM64)**: JDK 17, `/opt/android-sdk` e NDK condivisi si usano, non
   si modificano; la toolchain NDK è quella patchata per host aarch64
   (`expo-ci/setup-ndk-aarch64-host`, idempotente). Daemon di Gradle spento; worker da

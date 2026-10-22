@@ -197,7 +197,7 @@ jobs:
       profile: ${{ steps.pick.outputs.profile }}
     steps:
       - id: pick
-        uses: GabryXnLab/build-kit/pick-runner@ohos-stack
+        uses: GabryXnLab/build-kit/pick-runner@main
         with:
           token: ${{ secrets.RUNNER_PICK_TOKEN }}
           repos: ${{ inputs.pick_repos }}
@@ -248,7 +248,7 @@ jobs:
 
       - name: Notify start via Telegram
         id: started
-        uses: GabryXnLab/build-kit/notify@ohos-stack
+        uses: GabryXnLab/build-kit/notify@main
         with:
           run_inputs: ${{ toJSON(github.event.inputs) }}
           bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -268,13 +268,13 @@ jobs:
       # rustup/apt. Prima di `setup`, che aggiunge i suoi -D a GRADLE_OPTS del devShell (aapt2 nello store).
       - name: Nix devShell (ohos)
         if: ${{ steps.profile.outputs.value == 'ohos' }}
-        uses: GabryXnLab/build-kit/nix-env@ohos-stack
+        uses: GabryXnLab/build-kit/nix-env@main
         with:
           flake_dir: ${{ inputs.flake_dir }}
 
       - name: Tune build
         id: tune
-        uses: GabryXnLab/build-kit/setup@ohos-stack
+        uses: GabryXnLab/build-kit/setup@main
         with:
           runner: ${{ steps.profile.outputs.setup_runner }}
           max_workers: ${{ inputs.max_workers }}
@@ -607,7 +607,7 @@ jobs:
 
       - name: Notify via Telegram
         if: ${{ always() }}
-        uses: GabryXnLab/build-kit/notify@ohos-stack
+        uses: GabryXnLab/build-kit/notify@main
         with:
           message_id: ${{ steps.started.outputs.message_id }}
           run_inputs: ${{ toJSON(github.event.inputs) }}
