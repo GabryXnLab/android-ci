@@ -126,9 +126,9 @@ on:
         default: '8'
         type: string
       remote_cache:
-        description: 'true → cache remota (build-kit/setup) anche su nexus-core; su ohos e Ubicloud con auto è sempre accesa'
+        description: 'Cache remota (Gradle sul bucket OCI, via build-kit/setup) su ogni runner, nexus-core compreso. false la spegne; senza credenziali si salta, e clear_cache la spegne comunque'
         required: false
-        default: false
+        default: true
         type: boolean
       ref:
         description: 'Branch/tag/SHA da buildare. Vuoto = quello del run.'
@@ -250,7 +250,7 @@ jobs:
             *) echo "::error::runner non valido: '$RUNNER_KIND' (attesi: self-hosted | github | auto)"; exit 1 ;;
           esac
           REMOTE=false
-          if [ "$REMOTE_CACHE_INPUT" = "true" ] || { [ "$RUNNER_KIND" = "auto" ] && [ "$PROFILE" != "nexus" ]; }; then REMOTE=true; fi
+          if [ "$REMOTE_CACHE_INPUT" = "true" ]; then REMOTE=true; fi
           echo "Profilo $PROFILE (runner=$RUNNER_KIND, setup=$SETUP_RUNNER, cache remota=$REMOTE)"
           {
             echo "value=$PROFILE"
