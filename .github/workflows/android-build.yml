@@ -369,7 +369,7 @@ jobs:
 
       - name: Restore dependency archives (S3)
         if: ${{ steps.profile.outputs.s3c == 'true' }}
-        uses: GabryXnLab/build-kit/s3-cache@s3-cache
+        uses: GabryXnLab/build-kit/s3-cache@main
         with:
           mode: restore
           stack: android
@@ -570,7 +570,7 @@ jobs:
       # (che parte dai file sul runner, nello step finale). L'esito sta in «Artifact warnings».
       - name: Save dependency archives (S3)
         if: ${{ success() && steps.profile.outputs.s3c == 'true' }}
-        uses: GabryXnLab/build-kit/s3-cache@s3-cache
+        uses: GabryXnLab/build-kit/s3-cache@main
         with:
           mode: save
           stack: android
