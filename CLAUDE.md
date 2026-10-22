@@ -37,7 +37,7 @@ actionlint .github/workflows/android-build.yml   # se installato
   `max_workers`, `clear_cache`, con le descrizioni di `build-kit`. `runner: github` usa
   `github_runner_label` (default `ubuntu-24.04`, x86-64: l'NDK 27 ha toolchain solo x86-64 per
   Linux; `ubuntu-24.04-arm` serve un NDK con host aarch64).
-- **`runner: auto` e profilo (branch `auto-runner`)**: il job `pick` (`build-kit/pick-runner`, secret
+- **`runner: auto` e profilo**: il job `pick` (`build-kit/pick-runner`, secret
   `RUNNER_PICK_TOKEN`) sceglie nexus-core, ohos o Ubicloud; il profilo `nexus|ohos|ephemeral` decide gli
   step (non più `inputs.runner`). `ephemeral` = come `github` (Ubicloud x86-64: niente patch NDK aarch64,
   `setup` con `remote_cache` e `BUILD_CACHE_S3`, sccache S3 per il core Rust). Input `allow` per provare un
