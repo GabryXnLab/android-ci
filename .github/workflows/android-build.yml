@@ -145,6 +145,14 @@ on:
         required: false
         default: ''
         type: string
+      prepare_command:
+        description: >-
+          Comando opzionale eseguito dalla radice del repo dopo il checkout e prima di Gradle, con
+          GITHUB_TOKEN disponibile: serve a materializzare artefatti nativi esterni verificati (stesso
+          input di expo-ci e flutter-ci).
+        required: false
+        default: ''
+        type: string
       updater_artifact:
         description: >-
           Nome dell'artifact (es. packages-android-arm64: la cartella dice OS e ABI) che porta l'APK appena costruito con la
@@ -477,6 +485,13 @@ jobs:
                  | grep -m1 -oE 'SHA1: [0-9A-F:]+' | cut -d' ' -f2)
           echo "sha1=$SHA1" >> "$GITHUB_OUTPUT"
           echo "Firma release attesa: SHA-1 $SHA1"
+
+      - name: Prepare command
+        if: ${{ inputs.prepare_command != '' }}
+        env:
+          PREPARE_COMMAND: ${{ inputs.prepare_command }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash -euo pipefail -c "$PREPARE_COMMAND"
 
       # Il daemon resta spento (il runner uccide i processi a fine job). Worker e parallelo
       # arrivano da GRADLE_OPTS (build-kit, input max_workers).
